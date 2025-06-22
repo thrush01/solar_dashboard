@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ESP32 Solar Tracker Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #0066cc, #00cc99);
+      padding: 30px;
+      color: #fff;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(8px);
+      border: none;
+      border-radius: 1rem;
+      color: white;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+    }
+    .slider {
+      width: 100%;
+    }
+    .slider-label {
+      margin-top: 1rem;
+      font-weight: 600;
+    }
+    .card-value {
+      font-size: 2rem;
+      font-weight: bold;
+    }
+    #connectBtn, #modeBtn {
+      display: block;
+      margin: 0 auto 20px auto;
+      width: 200px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1 class="text-center">Solar Tracker Dashboard</h1>
+  <button id="connectBtn" class="btn btn-light" onclick="connect()">Connect to ESP32</button>
+  <button id="modeBtn" class="btn btn-secondary" onclick="toggleMode()" disabled>Switch to Manual</button>
+
+  <div class="container">
+    <div class="row g-4">
+
+      <!-- LDR Sensor Cards -->
+      <div class="col-md-3">
+        <div class="card p-3 text-center">
+          <h5>Top Left</h5>
+          <div class="card-value" id="sensor1Value">--</div>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card p-3 text-center">
+          <h5>Top Right</h5>
+          <div class="card-value" id="sensor2Value">--</div>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card p-3 text-center">
+          <h5>Bottom Left</h5>
+          <div class="card-value" id="sensor3Value">--</div>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card p-3 text-center">
+          <h5>Bottom Right</h5>
+          <div class="card-value" id="sensor4Value">--</div>
+        </div>
+      </div>
+
+      <!-- Servo Angles -->
+      <div class="col-md-4">
+        <div class="card p-3 text-center">
+          <h5>Horizontal Servo</h5>
+          <div class="card-value" id="servo1Angle">--°</div>
+          <label class="slider-label">Manual Angle</label>
+          <input type="range" min="0" max="180" value="90" class="slider" id="servo1Slider" oninput="sendManual()" disabled>
+        </div>
+      </div>
+
+      <div class="col-md-4">
+        <div class="card p-3 text-center">
+          <h5>Vertical Servo</h5>
+          <div class="card-value" id="servo2Angle">--°</div>
+          <label class="slider-label">Manual Angle</label>
+          <input type="range" min="0" max="180" value="90" class="slider" id="servo2Slider" oninput="sendManual()" disabled>
+        </div>
+      </div>
+
+      <div class="col-md-4">
+        <div class="card p-3 text-center">
+          <h5>Panel Angle</h5>
+          <div class="card-value" id="panelAngle">--°</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    let ldrChar;
+    let cmdChar;
+    let manualMode = false;
+
+    async function connect() {
+      try {
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: 'SolarTracker' }],
+          optionalServices: ['12345678-1234-1234-1234-1234567890ab']
+        });
+
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService('12345678-1234-1234-1234-1234567890ab');
+
+        ldrChar = await service.getCharacteristic('abcd1234-5678-90ab-cdef-1234567890ab');
+        cmdChar = await service.getCharacteristic('dcba4321-8765-ba09-fedc-0987654321ba');
+
+        await ldrChar.startNotifications();
+
+        ldrChar.addEventListener('characteristicvaluechanged', event => {
+          const decoder = new TextDecoder('utf-8');
+          const json = decoder.decode(event.target.value);
+          try {
+            const data = JSON.parse(json);
+
+            document.getElementById('sensor1Value').textContent = data.sensor1 ?? '--';
+            document.getElementById('sensor2Value').textContent = data.sensor2 ?? '--';
+            document.getElementById('sensor3Value').textContent = data.sensor3 ?? '--';
+            document.getElementById('sensor4Value').textContent = data.sensor4 ?? '--';
+
+            document.getElementById('servo1Angle').textContent = (data.servo1 ?? '--') + '°';
+            document.getElementById('servo2Angle').textContent = (data.servo2 ?? '--') + '°';
+            document.getElementById('panelAngle').textContent = (data.panel ?? '--') + '°';
+
+            // Safely update servo1 slider if valid
+            let servo1Val = parseInt(data.servo1);
+            const currServo1 = parseInt(document.getElementById('servo1Slider').value);
+            if (!isNaN(servo1Val) && servo1Val >= 0 && servo1Val <= 180 && Math.abs(servo1Val - currServo1) > 2) {
+              document.getElementById('servo1Slider').value = servo1Val;
+            }
+
+            // Safely update servo2 slider if valid
+            let servo2Val = parseInt(data.servo2);
+            const currServo2 = parseInt(document.getElementById('servo2Slider').value);
+            if (!isNaN(servo2Val) && servo2Val >= 0 && servo2Val <= 180 && Math.abs(servo2Val - currServo2) > 2) {
+              document.getElementById('servo2Slider').value = servo2Val;
+            }
+
+            // Update mode from ESP32 data.manualMode if sent
+            if (typeof data.manualMode !== 'undefined') {
+              manualMode = data.manualMode === true || data.manualMode === "true";
+              updateModeUI();
+            }
+          } catch (e) {
+            console.warn('Invalid JSON from ESP32', e);
+          }
+        });
+
+        document.getElementById('modeBtn').disabled = false;
+
+        alert('Connected to ESP32!');
+      } catch (err) {
+        alert('Connection failed');
+        console.error(err);
+      }
+    }
+
+    function updateModeUI() {
+      const modeBtn = document.getElementById('modeBtn');
+      const servo1Slider = document.getElementById('servo1Slider');
+      const servo2Slider = document.getElementById('servo2Slider');
+
+      if (manualMode) {
+        modeBtn.textContent = 'Switch to Auto';
+        servo1Slider.disabled = false;
+        servo2Slider.disabled = false;
+      } else {
+        modeBtn.textContent = 'Switch to Manual';
+        servo1Slider.disabled = true;
+        servo2Slider.disabled = true;
+      }
+    }
+
+    function toggleMode() {
+      manualMode = !manualMode;
+
+      if (manualMode) {
+        sendModeCommand('manual:true');
+      } else {
+        sendModeCommand('auto');
+      }
+      updateModeUI();
+    }
+
+    function sendModeCommand(modeString) {
+      if (!cmdChar) return;
+      const encoded = new TextEncoder().encode(modeString);
+      cmdChar.writeValue(encoded).catch(err => console.error('Write error', err));
+    }
+
+    function sendManual() {
+      if (!cmdChar || !manualMode) return;
+
+      const h = parseInt(document.getElementById('servo1Slider').value);
+      const v = parseInt(document.getElementById('servo2Slider').value);
+
+      const commandString = `manual:true,servo1:${h},servo2:${v}`;
+      const encoded = new TextEncoder().encode(commandString);
+      cmdChar.writeValue(encoded).catch(err => console.error('Write error', err));
+    }
+  </script>
+
+</body>
+</html>
